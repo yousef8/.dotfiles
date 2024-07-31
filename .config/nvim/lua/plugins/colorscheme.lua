@@ -7,12 +7,6 @@ return {
     --     require("vim-moonfly-colors").load()
     --   end,
     -- },
-    -- {
-    --   "LazyVim/LazyVim",
-    --   opts = {
-    --     colorscheme = "moonfly",
-    --   },
-    -- },
   },
   -- {
   --   "catppuccin/nvim",
@@ -27,9 +21,20 @@ return {
   --   },
   -- },
   {
+    "folke/tokyonight.nvim",
+    opts = {
+      style = "night",
+      transparent = true, -- It does nothing styles property is what makes everything transparent
+      styles = {
+        sidebars = "transparent",
+        floats = "transparent",
+      },
+    },
+  },
+  {
     "LazyVim/LazyVim",
     opts = {
-      colorscheme = "catppuccin",
+      colorscheme = "tokyonight",
     },
   },
 }
