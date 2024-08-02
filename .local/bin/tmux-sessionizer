@@ -1,25 +1,48 @@
 #!/usr/bin/env bash
 
-if [[ $# -eq 1 ]]; then
-  selected=$1
-else
-  selected=$(
-    # Brace expansion needs shell supporting it like in bash,zsh,fish,ksh
-    fd --type d --hidden --follow \
-      --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm}" \
-      . ~/ 2>/dev/null | fzf --height ~40% --layout reverse --border
-  )
+function get_editor() {
+  if command -v "nvim" >/dev/null; then # `> /dev/null` to redirect the output and make the command silent
+    echo "nvim"
+    return 0
+  fi
+
+  echo "$EDIOR"
+}
+
+editor="$(get_editor)"
+if [[ -z "$editor" ]]; then
+  echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
+  exit 1
 fi
 
-if [[ -z $selected ]]; then
+path_selected=$(
+  fd --hidden --follow \
+    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm}" \
+    --exclude "{*.mp4}" \
+    . ~/ 2>/dev/null | fzf --height 40% --border --layout reverse
+)
+
+if [[ -z "$path_selected" ]]; then
   exit 0
 fi
 
-selected_name=$(basename "$selected" | tr . _)
-tmux_running=$(pgrep tmux)
-
-if ! tmux has-session -t="$selected_name" 2>/dev/null; then
-  tmux new-session -ds "$selected_name" -c "$selected"
+session_name=$(basename "$path_selected" | tr . _)
+# why not just `"path_selected"`, because for some reason the result of `fd`
+# when creating a tmux session with it my prompt [zsh + ohMyZsh + robbyrussel theme]
+# doesn't show the current directory and `dirname` fix it
+session_path="$(dirname "$path_selected/a")"
+if [[ -f "$path_selected" ]]; then
+  session_path="$(dirname "$path_selected")"
 fi
 
-tmux switch-client -t "$selected_name" || tmux attach -t "$selected_name"
+if ! tmux has-session -t="$session_name" 2>/dev/null; then
+  tmux new-session -ds "$session_name" -c "$session_path"
+
+fi
+
+if [[ -f "$path_selected" ]]; then
+  file_name="$(basename "$path_selected")"
+  tmux send-keys -t "$session_name" "$editor $file_name" C-m
+fi
+
+tmux switch-client -t "$session_name" || tmux attach -t "$session_name"
