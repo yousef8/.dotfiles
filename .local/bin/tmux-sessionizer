@@ -17,7 +17,7 @@ fi
 
 path_selected=$(
   fd --hidden --follow \
-    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm}" \
+    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle}" \
     --exclude "{*.mp4}" \
     . ~/ 2>/dev/null | fzf --height 40% --border --layout reverse
 )
