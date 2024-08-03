@@ -103,7 +103,10 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
-bindkey -s ^f "tmux-sessionizer\n"
+#`;` is important because if there was some already prexisting texts in the prompt,
+#`;` like in js means end of programming statement
+# normally text in prompt will be in-complete commands [ I hope so ]
+bindkey -s ^f ";tmux-sessionizer\n"
 
 # Set up fzf key bindings and fuzzy completion
 source <(fzf --zsh)
