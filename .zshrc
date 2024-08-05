@@ -109,7 +109,14 @@ source $ZSH/oh-my-zsh.sh
 bindkey -s ^f ";tmux-sessionizer\n"
 
 # Set up fzf key bindings and fuzzy completion
-source <(fzf --zsh)
+if command -v fzf > /dev/null 2>&1 && fzf --zsh > /dev/null 2>&1; then
+  source <(fzf --zsh)
+fi
+
+if command -v fzf > /dev/null 2>&1; then
+  source /usr/share/doc/fzf/examples/key-bindings.zsh
+  source /usr/share/doc/fzf/examples/completion.zsh
+fi
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
