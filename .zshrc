@@ -113,7 +113,7 @@ if command -v fzf > /dev/null 2>&1 && fzf --zsh > /dev/null 2>&1; then
   source <(fzf --zsh)
 fi
 
-if command -v fzf > /dev/null 2>&1; then
+if command -v fzf > /dev/null 2>&1 && ! fzf --zsh > /dev/null 2>&1; then
   source /usr/share/doc/fzf/examples/key-bindings.zsh
   source /usr/share/doc/fzf/examples/completion.zsh
 fi
