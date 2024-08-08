@@ -5,7 +5,7 @@ local wezterm = require("wezterm")
 local config = wezterm.config_builder()
 
 -- Appearance settings
-local background_image_path = os.getenv("HOME") .. "/.dotfiles/blurred-wallpapers/ghost-of-tsushmi-blur.jpeg"
+local background_image_path = os.getenv("HOME") .. "/.dotfiles/blurred-wallpapers/8-blur.jpeg"
 
 config.font = wezterm.font("Iosevka Nerd Font Mono")
 config.font_size = 14.0
