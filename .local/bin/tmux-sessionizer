@@ -40,6 +40,7 @@ if ! tmux has-session -t="$session_name" 2>/dev/null; then
 
 fi
 
+# BUG: it tries to open the file even if it already has an open session
 if [[ -f "$path_selected" ]]; then
   file_name="$(basename "$path_selected")"
   tmux send-keys -t "$session_name" "$editor $file_name" C-m
