@@ -2,6 +2,17 @@
 
 # TODO: Check that fd && fzf && tmux exists before starting
 
+#######################################
+# Determin the editor to use
+# Globals:
+#   None
+# Arguments:
+#   None
+# Outputs:
+#   Editor Command name to be called
+# Returns:
+#   0 on success, non-zero on error
+#######################################
 function get_editor() {
   if command -v "nvim" >/dev/null; then # `> /dev/null` to redirect the output and make the command silent
     echo "nvim"
