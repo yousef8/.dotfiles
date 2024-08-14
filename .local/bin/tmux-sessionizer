@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# TODO: Check that fd && fzf && tmux exists before starting
+
 function get_editor() {
   if command -v "nvim" >/dev/null; then # `> /dev/null` to redirect the output and make the command silent
     echo "nvim"
