@@ -11,18 +11,32 @@ function get_editor() {
   echo "$EDIOR"
 }
 
+#######################################
+# Search for files and dirs starting from
+# the home dir matching regex passed to it
+# Globals:
+#   None
+# Arguments:
+#   Regex by default `.` to search for everything
+# Outputs:
+#   Paths that match the regex
+#######################################
+search() {
+  local pattern="${1:-.}" # Use the argument if provided, otherwise default to '.'
+
+  fd --hidden --follow \
+    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle}" \
+    --exclude "{*.mp4}" \
+    "$pattern" ~/ 2>/dev/null
+}
+
 editor="$(get_editor)"
 if [[ -z "$editor" ]]; then
   echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
   exit 1
 fi
 
-path_selected=$(
-  fd --hidden --follow \
-    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle}" \
-    --exclude "{*.mp4}" \
-    . ~/ 2>/dev/null | fzf --height 40% --border --layout reverse
-)
+path_selected=$(search | fzf --height 40% --border --layout reverse)
 
 if [[ -z "$path_selected" ]]; then
   exit 0
