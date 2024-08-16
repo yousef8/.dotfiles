@@ -41,13 +41,119 @@ search() {
     "$pattern" ~/ 2>/dev/null
 }
 
+#######################################
+# Echos args passed to it to stderr.
+# Globals:
+#   None
+# Arguments:
+#   Ang number or args
+# Returns:
+#   0 on success
+#   exit codes of `echo` on error
+# Outputs:
+#   args passed to it as one sting to stderr
+#######################################
+function echo_err() {
+  echo "$*" >&2
+}
+
+#######################################
+# Resolve relative paths into absolute
+# Globals:
+#   None
+# Arguments:
+#   relative path
+# Returns:
+#   0 on success
+#   1 not a relative or absolute path
+# Outputs:
+#   args passed to it as one sting to stderr
+#######################################
+function resolve_path() {
+  if [[ "$#" -ne 1 ]]; then
+    echo_err "resolve_path: Exactly one argument is required."
+    return 1
+  fi
+
+  local path="$1"
+
+  if [[ "$path" =~ ^\.\/ ]]; then
+    echo "${path/#\./$PWD}"
+    return 0
+  fi
+
+  if [[ "$path" =~ ^\~\/ ]]; then
+    echo "${path/#\~/$HOME}"
+    return 0
+  fi
+
+  if [[ "$path" =~ ^\/ ]]; then
+    echo "$path"
+    return 0
+  fi
+
+  echo_err "resolve_path: $path is not a relative or absolute path"
+  return 1
+}
+
+#######################################
+# Ensure that the relative/abs path passed
+# exists if not it creates it.
+# if path ends with `/` then it's a dir
+# otherwise it's a file
+# Globals:
+#   None
+# Arguments:
+#   relative/abs path
+# Returns:
+#   0 on success
+#   1 not a relative or absolute path
+# Outputs:
+#   newly created path
+#   if error, outputs error message to stderr
+#######################################
+function create_path() {
+  if [[ "$#" -ne 1 ]]; then
+    echo_err "create_path: Exactly one argument is required."
+    return 1
+  fi
+
+  local path="$1"
+  local abs_path
+
+  abs_path="$(resolve_path "$path")"
+
+  if [[ "$?" = 1 ]]; then
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$abs_path")"
+
+  # TODO: check if creation failed then return exit code 2, this will require you to reprompt the user with error message in fzf
+  if [[ "$abs_path" =~ \/$ ]]; then
+    mkdir -p "$abs_path"
+  else
+    touch "$abs_path"
+  fi
+
+  echo "$abs_path"
+  return 0
+}
+
 editor="$(get_editor)"
 if [[ -z "$editor" ]]; then
   echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
   exit 1
 fi
 
-path_selected=$(search | fzf --height 40% --border --layout reverse)
+fzf_output=$(search | fzf --print-query --height 40% --border --layout reverse --bind 'tab:replace-query')
+fzf_query=$(head -1 <<<"$fzf_output")
+path_selected=$(tail -1 <<<"$fzf_output")
+
+# TODO: Needs Refactoring
+if created_path="$(create_path "$fzf_query" 2>/dev/null)"; then
+  path_selected="$created_path"
+fi
 
 if [[ -z "$path_selected" ]]; then
   exit 0
