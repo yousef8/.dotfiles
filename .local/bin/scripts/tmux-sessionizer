@@ -36,8 +36,8 @@ search() {
   local pattern="${1:-.}" # Use the argument if provided, otherwise default to '.'
 
   fd --hidden --follow \
-    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle}" \
-    --exclude "{*.mp4}" \
+    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle,go,snap}" \
+    --exclude "{*.mp4,*.png,*.jpg,*.jpeg,*.svg}" \
     "$pattern" ~/ 2>/dev/null
 }
 
