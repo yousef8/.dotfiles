@@ -4,7 +4,7 @@
 
 -- Enable the option to require a Prettier config file
 -- If no prettier config file is found, the formatter will not be used
-vim.g.lazyvim_prettier_needs_config = false
+vim.g.lazyvim_prettier_needs_config = true
 
 -- In case you don't want to use `:LazyExtras`,
 -- then you need to set the option below.
