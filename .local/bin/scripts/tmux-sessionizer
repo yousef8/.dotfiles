@@ -14,6 +14,7 @@
 #   0 on success, non-zero on error
 #######################################
 function get_editor() {
+  # FIX: handle aliases
   if command -v "nvim" >/dev/null; then # `> /dev/null` to redirect the output and make the command silent
     echo "nvim"
     return 0
@@ -140,12 +141,6 @@ function create_path() {
   return 0
 }
 
-editor="$(get_editor)"
-if [[ -z "$editor" ]]; then
-  echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
-  exit 1
-fi
-
 fzf_output=$(search | fzf --print-query --height 40% --border --layout reverse --bind 'tab:replace-query')
 fzf_query=$(head -1 <<<"$fzf_output")
 path_selected=$(tail -1 <<<"$fzf_output")
@@ -172,6 +167,13 @@ if ! tmux has-session -t="$session_name" 2>/dev/null; then
   tmux new-session -ds "$session_name" -c "$session_path"
 
   if [[ -f "$path_selected" ]]; then
+
+    editor="$(get_editor)"
+    if [[ -z "$editor" ]]; then
+      echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
+      exit 1
+    fi
+
     file_name="$(basename "$path_selected")"
     tmux send-keys -t "$session_name" "$editor $file_name" C-m
   fi
