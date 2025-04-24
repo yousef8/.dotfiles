@@ -118,7 +118,5 @@ if command -v fzf > /dev/null 2>&1 && ! fzf --zsh > /dev/null 2>&1; then
   source /usr/share/doc/fzf/examples/completion.zsh
 fi
 
-export PATH=/home/user/.meteor:$PATH
-
 #Star Ship
 eval "$(starship init zsh)"
