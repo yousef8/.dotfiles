@@ -1,182 +1,427 @@
 #!/usr/bin/env bash
+#
+# # tmux-sessionizer
+#
+# fzf-driven tmux session launcher — pick a running session, a frecent dir, or
+# any path under $SEARCH_PATHS, then attach a tmux session for it.
+#
+# ## Usage
+#
+# Run interactively:
+#
+# ```sh
+# tmux-sessionizer
+# ```
+#
+# Inside fzf:
+#
+#   - Type to filter, **Enter** to open
+#   - **Tab** replaces the query with the highlighted item
+#   - **Esc** / **Ctrl-C** cancels
+#
+# Selection dispatch (by tag prefix):
+#
+#   - `[session]` — attach/switch to existing tmux session
+#   - `[dir]`     — create/attach session with cwd = dir
+#   - `[file]`    — create/attach session at file's parent dir, open file in $EDITOR
+#
+# If nothing matches and the query looks like a path (starts with `~/`, `./`,
+# or `/`), the path is created on disk and opened. Trailing `/` makes a dir,
+# otherwise a file. **Selection always wins over query** — anything highlighted
+# ignores the typed query.
+#
+# ## Tmux keybind / shell alias
+#
+# `~/.config/tmux/tmux.conf`:
+#
+# ```tmux
+# bind-key -n C-f run-shell "tmux-sessionizer"
+# ```
+#
+# `~/.zshrc`:
+#
+# ```sh
+# alias t=tmux-sessionizer
+# ```
+#
+# ## Data sources (merged, deduped by line)
+#
+#   1. Running tmux sessions   →  `[session] <name>`
+#   2. zoxide frecent dirs     →  `[dir]     <path>`
+#   3. fd over `$SEARCH_PATHS` →  `[dir]` / `[file]` `<path>`
+#
+# Tags are fixed-width, so typing `[session]`, `[dir]`, or `[file]` in the fzf
+# prompt filters to that kind.
+#
+# ## Configuration
+#
+# Optional bash file at `$XDG_CONFIG_HOME/tmux-sessionizer/config`
+# (falls back to `~/.config/tmux-sessionizer/config`). Sourced at startup.
+#
+# | Variable               | Default                       | Purpose                               |
+# |------------------------|-------------------------------|---------------------------------------|
+# | `SEARCH_PATHS`         | `($HOME)`                     | Roots fd walks. Array.                |
+# | `FD_EXCLUDES`          | `.git node_modules target ...`| Dir globs fd skips. Array.            |
+# | `FD_FILE_EXCLUDES`     | `*.png *.mp4 *.pdf ...`       | File globs fd skips. Array.           |
+# | `USE_ZOXIDE`           | `1`                           | Include zoxide frecent dirs (0/1).    |
+# | `USE_RUNNING_SESSIONS` | `1`                           | Include running tmux sessions (0/1).  |
+# | `FZF_HEIGHT`           | `40%`                         | Passed to `fzf --height`.             |
+#
+# Example config:
+#
+# ```bash
+# SEARCH_PATHS=(~/work ~/personal ~/.dotfiles)
+# FZF_HEIGHT="60%"
+# USE_ZOXIDE=0
+# ```
+#
+# ## Dependencies
+#
+#   - **Required:** `fd`, `fzf`, `tmux`
+#   - **Optional:** `zoxide` (silently skipped if missing); one of `nvim` /
+#     `vim` / `vi` is required only for `[file]` selections
+#
+# ## Limitations
+#
+# `$EDITOR` / `$VISUAL` are used literally; shell aliases are not expanded
+# (zsh-only feature, out of scope for a bash script). File-open assumes the
+# editor runs in a terminal. No CLI args — invocation is always interactive.
 
-# TODO: Check that fd && fzf && tmux exists before starting
+set -euo pipefail
+IFS=$'\n\t'
 
-#######################################
-# Determin the editor to use
-# Globals:
-#   None
-# Arguments:
-#   None
-# Outputs:
-#   Editor Command name to be called
-# Returns:
-#   0 on success, non-zero on error
-#######################################
-function get_editor() {
-  # FIX: handle aliases
-  if command -v "nvim" >/dev/null; then # `> /dev/null` to redirect the output and make the command silent
-    echo "nvim"
-    return 0
-  fi
+# ---------- logging ----------
 
-  echo "$EDIOR"
+log_err() { printf '%s\n' "$*" >&2; }
+log_warn() { printf 'warning: %s\n' "$*" >&2; }
+die() {
+  log_err "error: $*"
+  exit 1
 }
 
-#######################################
-# Search for files and dirs starting from
-# the home dir matching regex passed to it
-# Globals:
-#   None
-# Arguments:
-#   Regex by default `.` to search for everything
-# Outputs:
-#   Paths that match the regex
-#######################################
-search() {
-  local pattern="${1:-.}" # Use the argument if provided, otherwise default to '.'
+# ---------- dep check ----------
 
-  fd --hidden --follow \
-    --exclude "{.git,node_modules,.cache,.var,.vscode,.docker,.nvm,.java,.npm,.rbenv,.bundle,go,snap}" \
-    --exclude "{*.mp4,*.png,*.jpg,*.jpeg,*.svg}" \
-    "$pattern" ~/ 2>/dev/null
+require_cmds() {
+  local missing=() cmd
+  for cmd in fd fzf tmux; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  if ((${#missing[@]} > 0)); then
+    die "missing required commands: ${missing[*]}"
+  fi
 }
 
-#######################################
-# Echos args passed to it to stderr.
-# Globals:
-#   None
-# Arguments:
-#   Ang number or args
-# Returns:
-#   0 on success
-#   exit codes of `echo` on error
-# Outputs:
-#   args passed to it as one sting to stderr
-#######################################
-function echo_err() {
-  echo "$*" >&2
+# ---------- config ----------
+
+load_config() {
+  local config="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-sessionizer/config"
+  if [[ -f "$config" ]]; then
+    # shellcheck source=/dev/null
+    source "$config"
+  fi
+
+  : "${USE_ZOXIDE:=1}"
+  : "${USE_RUNNING_SESSIONS:=1}"
+  : "${FZF_HEIGHT:=40%}"
+
+  if [[ -z "${SEARCH_PATHS+x}" ]]; then
+    SEARCH_PATHS=("$HOME")
+  fi
+  if [[ -z "${FD_EXCLUDES+x}" ]]; then
+    FD_EXCLUDES=(
+      .git node_modules .cache .var .vscode .docker .nvm .java .npm .rbenv .bundle go snap
+      .cargo target .rustup
+      __pycache__ .venv venv .mypy_cache .pytest_cache .ruff_cache
+      build dist vendor coverage
+      .gradle .m2
+      .next .nuxt .svelte-kit .vite .turbo
+      .terraform
+      .deno .yarn .pnpm-store
+    )
+  fi
+  if [[ -z "${FD_FILE_EXCLUDES+x}" ]]; then
+    FD_FILE_EXCLUDES=(
+      # images
+      "*.png" "*.jpg" "*.jpeg" "*.gif" "*.webp" "*.bmp" "*.tiff" "*.tif"
+      "*.ico" "*.svg" "*.heic" "*.heif" "*.avif" "*.raw" "*.psd"
+      # video
+      "*.mp4" "*.mkv" "*.avi" "*.mov" "*.webm" "*.flv" "*.wmv"
+      "*.m4v" "*.mpg" "*.mpeg" "*.3gp" "*.ogv"
+      # audio
+      "*.mp3" "*.wav" "*.flac" "*.ogg" "*.m4a" "*.aac" "*.opus" "*.wma" "*.aiff"
+      # archives
+      "*.zip" "*.tar" "*.gz" "*.bz2" "*.xz" "*.7z" "*.rar"
+      "*.tgz" "*.tbz" "*.tbz2" "*.txz" "*.zst" "*.lz" "*.lzma"
+      # packages
+      "*.deb" "*.rpm" "*.pkg" "*.dmg" "*.appimage" "*.snap"
+      # executables / binaries
+      "*.exe" "*.dll" "*.so" "*.dylib" "*.o" "*.a" "*.obj" "*.bin" "*.out" "*.wasm"
+      # JVM
+      "*.class" "*.jar" "*.war" "*.ear"
+      # python compiled
+      "*.pyc" "*.pyo"
+      # mobile
+      "*.apk" "*.ipa"
+      # documents (binary)
+      "*.pdf" "*.doc" "*.docx" "*.xls" "*.xlsx" "*.ppt" "*.pptx"
+      "*.odt" "*.ods" "*.odp" "*.epub" "*.mobi"
+      # fonts
+      "*.ttf" "*.otf" "*.woff" "*.woff2" "*.eot"
+      # databases
+      "*.db" "*.sqlite" "*.sqlite3" "*.mdb"
+      # 3D / design
+      "*.blend" "*.fbx" "*.stl" "*.gltf" "*.glb"
+      # disk images
+      "*.iso" "*.img" "*.vhd" "*.vmdk" "*.qcow2"
+    )
+  fi
 }
 
-#######################################
-# Resolve relative paths into absolute
-# Globals:
-#   None
-# Arguments:
-#   relative path
-# Returns:
-#   0 on success
-#   1 not a relative or absolute path
-# Outputs:
-#   args passed to it as one sting to stderr
-#######################################
-function resolve_path() {
-  if [[ "$#" -ne 1 ]]; then
-    echo_err "resolve_path: Exactly one argument is required."
-    return 1
-  fi
+# ---------- editor resolution ----------
+# Order: $EDITOR -> $VISUAL -> nvim -> vim -> vi.
+# Handles $EDITOR="nvim -p" by validating the first token only.
 
-  local path="$1"
-
-  if [[ "$path" =~ ^\.\/ ]]; then
-    echo "${path/#\./$PWD}"
-    return 0
-  fi
-
-  if [[ "$path" =~ ^\~\/ ]]; then
-    echo "${path/#\~/$HOME}"
-    return 0
-  fi
-
-  if [[ "$path" =~ ^\/ ]]; then
-    echo "$path"
-    return 0
-  fi
-
-  echo_err "resolve_path: $path is not a relative or absolute path"
+get_editor() {
+  local candidate first
+  for candidate in "${EDITOR:-}" "${VISUAL:-}"; do
+    [[ -n "$candidate" ]] || continue
+    first="${candidate%% *}"
+    if command -v "$first" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  for candidate in nvim vim vi; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
   return 1
 }
 
-#######################################
-# Ensure that the relative/abs path passed
-# exists if not it creates it.
-# if path ends with `/` then it's a dir
-# otherwise it's a file
-# Globals:
-#   None
-# Arguments:
-#   relative/abs path
-# Returns:
-#   0 on success
-#   1 not a relative or absolute path
-# Outputs:
-#   newly created path
-#   if error, outputs error message to stderr
-#######################################
-function create_path() {
-  if [[ "$#" -ne 1 ]]; then
-    echo_err "create_path: Exactly one argument is required."
-    return 1
-  fi
+# ---------- path helpers ----------
 
+resolve_path() {
+  if (($# != 1)); then
+    log_err "resolve_path: exactly one argument required"
+    return 2
+  fi
   local path="$1"
-  local abs_path
-
-  abs_path="$(resolve_path "$path")"
-
-  if [[ "$?" = 1 ]]; then
-    return 1
+  if [[ "$path" == ./* ]]; then
+    printf '%s\n' "$PWD/${path#./}"
+    return 0
   fi
-
-  mkdir -p "$(dirname "$abs_path")"
-
-  # TODO: check if creation failed then return exit code 2, this will require you to reprompt the user with error message in fzf
-  if [[ "$abs_path" =~ \/$ ]]; then
-    mkdir -p "$abs_path"
-  else
-    touch "$abs_path"
+  if [[ "$path" == '~/'* ]]; then
+    printf '%s\n' "$HOME/${path#'~/'}"
+    return 0
   fi
-
-  echo "$abs_path"
-  return 0
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
 }
 
-fzf_output=$(search | fzf --print-query --height 40% --border --layout reverse --bind 'tab:replace-query')
-fzf_query=$(head -1 <<<"$fzf_output")
-path_selected=$(tail -1 <<<"$fzf_output")
-
-# TODO: Needs Refactoring
-if created_path="$(create_path "$fzf_query" 2>/dev/null)"; then
-  path_selected="$created_path"
-fi
-
-if [[ -z "$path_selected" ]]; then
-  exit 0
-fi
-
-session_name=$(basename "$path_selected" | tr . _)
-# why not just `"path_selected"`, because for some reason the result of `fd`
-# when creating a tmux session with it my prompt [zsh + ohMyZsh + robbyrussel theme]
-# doesn't show the current directory and `dirname` fix it
-session_path="$(dirname "$path_selected/a")"
-if [[ -f "$path_selected" ]]; then
-  session_path="$(dirname "$path_selected")"
-fi
-
-if ! tmux has-session -t="$session_name" 2>/dev/null; then
-  tmux new-session -ds "$session_name" -c "$session_path"
-
-  if [[ -f "$path_selected" ]]; then
-
-    editor="$(get_editor)"
-    if [[ -z "$editor" ]]; then
-      echo "Please install nvim or set $EDITOR. The program checks in this order, this is important to open a file using a terminal editor"
-      exit 1
-    fi
-
-    file_name="$(basename "$path_selected")"
-    tmux send-keys -t "$session_name" "$editor $file_name" C-m
+# Creates the path on disk. Trailing '/' means dir, otherwise file.
+# Echoes the absolute path on success. Errors propagate to stderr.
+create_path() {
+  if (($# != 1)); then
+    log_err "create_path: exactly one argument required"
+    return 2
   fi
-fi
+  local path="$1"
+  mkdir -p -- "$(dirname "$path")" || return 1
+  if [[ "$path" == */ ]]; then
+    mkdir -p -- "$path" || return 1
+  else
+    touch -- "$path" || return 1
+  fi
+  printf '%s\n' "$path"
+}
 
-tmux switch-client -t "$session_name" || tmux attach -t "$session_name"
+# ---------- data sources ----------
+# Output format: '%-10s%s\n' — first 9 chars hold a tag like [session]/[dir]/[file],
+# column 10 onward holds the value. Tag-then-value parsing uses a regex in main().
+
+collect_sessions() {
+  ((USE_RUNNING_SESSIONS)) || return 0
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && printf '%-10s%s\n' '[session]' "$name"
+  done < <(tmux list-sessions -F '#S' 2>/dev/null || true)
+}
+
+collect_zoxide() {
+  ((USE_ZOXIDE)) || return 0
+  if ! command -v zoxide >/dev/null 2>&1; then
+    return 0
+  fi
+  local path
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && printf '%-10s%s\n' '[dir]' "$path"
+  done < <(zoxide query -l 2>/dev/null || true)
+}
+
+collect_fd() {
+  ((${#SEARCH_PATHS[@]} > 0)) || return 0
+
+  local exclude_args=() ex
+  for ex in "${FD_EXCLUDES[@]}" "${FD_FILE_EXCLUDES[@]}"; do
+    exclude_args+=(--exclude "$ex")
+  done
+
+  { fd --hidden --follow --type d "${exclude_args[@]}" . "${SEARCH_PATHS[@]}" 2>/dev/null || true; } |
+    awk '{printf "%-10s%s\n", "[dir]", $0}'
+  { fd --hidden --follow --type f "${exclude_args[@]}" . "${SEARCH_PATHS[@]}" 2>/dev/null || true; } |
+    awk '{printf "%-10s%s\n", "[file]", $0}'
+}
+
+build_source() {
+  {
+    collect_sessions
+    collect_zoxide
+    collect_fd
+  } | awk '!seen[$0]++'
+}
+
+# ---------- pick ----------
+# Returns a formatted line (tagged) on stdout. Returns non-zero if user cancelled
+# or typed a non-path query with no selection.
+
+pick() {
+  local fzf_out query selection
+  fzf_out="$(build_source | fzf \
+    --print-query \
+    --height "$FZF_HEIGHT" \
+    --border \
+    --layout reverse \
+    --bind 'tab:replace-query')" || true
+
+  query="$(head -n1 <<<"$fzf_out")"
+  selection="$(tail -n+2 <<<"$fzf_out" | tail -n1)"
+
+  if [[ -n "$selection" ]]; then
+    printf '%s\n' "$selection"
+    return 0
+  fi
+
+  [[ -n "$query" ]] || return 1
+
+  local abs_path
+  if ! abs_path="$(resolve_path "$query" 2>/dev/null)"; then
+    return 1
+  fi
+
+  local created
+  if ! created="$(create_path "$abs_path")"; then
+    die "could not create $abs_path"
+  fi
+
+  if [[ -d "$created" ]]; then
+    printf '%-10s%s\n' '[dir]' "$created"
+  else
+    printf '%-10s%s\n' '[file]' "$created"
+  fi
+}
+
+# ---------- session naming ----------
+# Basename with dots->underscores. On collision (same name, different cwd),
+# suffix with the parent directory's basename: foo, foo-personal, foo-work...
+
+derive_session_name() {
+  local path="$1" base target_cwd existing_cwd parent
+  base="$(basename "$path" | tr . _)"
+
+  if ! tmux has-session -t "=$base" 2>/dev/null; then
+    printf '%s\n' "$base"
+    return 0
+  fi
+
+  if [[ -d "$path" ]]; then
+    target_cwd="$path"
+  else
+    target_cwd="$(dirname "$path")"
+  fi
+
+  existing_cwd="$(tmux display-message -p -t "$base" '#{session_path}' 2>/dev/null || true)"
+
+  if [[ -n "$existing_cwd" && "$existing_cwd" != "$target_cwd" ]]; then
+    parent="$(basename "$(dirname "$path")")"
+    printf '%s-%s\n' "$base" "$parent"
+  else
+    printf '%s\n' "$base"
+  fi
+}
+
+# ---------- session ops ----------
+
+ensure_session() {
+  local name="$1" cwd="$2"
+  if ! tmux has-session -t "=$name" 2>/dev/null; then
+    tmux new-session -ds "$name" -c "$cwd"
+    return 0
+  fi
+  return 1
+}
+
+attach_or_switch() {
+  local name="$1"
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$name"
+  else
+    tmux attach -t "$name"
+  fi
+}
+
+open_dir() {
+  local path="$1" name
+  name="$(derive_session_name "$path")"
+  ensure_session "$name" "$path" || true
+  attach_or_switch "$name"
+}
+
+open_file() {
+  local path="$1" dir name editor file_basename
+  dir="$(dirname "$path")"
+  name="$(derive_session_name "$path")"
+
+  if ensure_session "$name" "$dir"; then
+    if ! editor="$(get_editor)"; then
+      die "no editor found: set \$EDITOR or install nvim/vim/vi"
+    fi
+    file_basename="$(basename "$path")"
+    tmux send-keys -t "$name" "$editor $(printf '%q' "$file_basename")" C-m
+  fi
+  attach_or_switch "$name"
+}
+
+# ---------- main ----------
+
+main() {
+  require_cmds
+  load_config
+
+  local selected tag value
+  if ! selected="$(pick)"; then
+    exit 0
+  fi
+
+  if [[ "$selected" =~ ^(\[[^]]+\])[[:space:]]+(.+)$ ]]; then
+    tag="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+  else
+    die "could not parse selection: $selected"
+  fi
+
+  case "$tag" in
+  '[session]') attach_or_switch "$value" ;;
+  '[dir]') open_dir "$value" ;;
+  '[file]') open_file "$value" ;;
+  *) die "unknown tag: $tag" ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
